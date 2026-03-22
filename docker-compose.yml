@@ -1,0 +1,200 @@
+# ─────────────────────────────────────────────────────────────
+# Ingestion Layer - Docker Compose
+# Intelligence-Driven Observability Platform (IDOP)
+# ─────────────────────────────────────────────────────────────
+
+services:
+
+  # ═══════════════════════════════════════════════════════════
+  # 1. Envoy Load Balancer (Ingestion Entry Point)
+  # ═══════════════════════════════════════════════════════════
+  envoy:
+    build: ./envoy
+    container_name: idop-envoy
+    ports:
+      - "${ENVOY_LISTEN_PORT:-10000}:10000"   # gRPC/HTTP2 ingress
+      - "${ENVOY_ADMIN_PORT:-9901}:9901"       # Admin API
+    depends_on:
+      - vector-aggregator
+    networks:
+      - ingestion-net
+
+  # ═══════════════════════════════════════════════════════════
+  # 2. Vector Aggregator (Stateless Ingestion Tier)
+  # ═══════════════════════════════════════════════════════════
+  vector-aggregator:
+    build: ./vector-aggregator
+    container_name: idop-vector-aggregator
+    environment:
+      - VECTOR_LOG=info
+      - REDPANDA_BROKER=${REDPANDA_BROKER:-redpanda:9092}
+    ports:
+      - "${VECTOR_AGG_PORT:-8686}:8686"         # Vector API
+      - "${VECTOR_AGG_GRPC_PORT:-4317}:4317"    # OTLP gRPC
+      - "${VECTOR_HEALTH_PORT:-8687}:8687"      # Health endpoint
+    volumes:
+      - ./vector-aggregator/vector.yaml:/etc/vector/vector.yaml:ro
+      - ./vector-aggregator/vrl:/etc/vector/vrl:ro
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    networks:
+      - ingestion-net
+
+  # ═══════════════════════════════════════════════════════════
+  # 3. Redpanda Cluster (Durable Buffer)
+  # ═══════════════════════════════════════════════════════════
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.1
+    container_name: idop-redpanda
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --smp 1
+      - --memory 1G
+      - --default-log-level=info
+    ports:
+      - "19092:19092"   # Kafka API (external)
+      - "18082:18082"   # Pandaproxy (external)
+      - "18081:18081"   # Schema Registry (external)
+      - "9644:9644"     # Admin API
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ingestion-net
+
+  # Redpanda Console (optional UI)
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.4.5
+    container_name: idop-redpanda-console
+    environment:
+      - CONFIG_FILEPATH=/etc/redpanda/console-config.yaml
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./redpanda/console-config.yaml:/etc/redpanda/console-config.yaml:ro
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    networks:
+      - ingestion-net
+
+  # ═══════════════════════════════════════════════════════════
+  # 4. ClickHouse (Cold Path Storage)
+  # ═══════════════════════════════════════════════════════════
+  clickhouse:
+    build: ./clickhouse
+    container_name: idop-clickhouse
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"     # HTTP interface
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"   # Native TCP
+    environment:
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-changeme}
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/config.xml:/etc/clickhouse-server/config.d/custom.xml:ro
+      - ./clickhouse/users.xml:/etc/clickhouse-server/users.d/custom.xml:ro
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ingestion-net
+
+  # ═══════════════════════════════════════════════════════════
+  # 5. Apache Flink (Hot Path Stream Processing)
+  # ═══════════════════════════════════════════════════════════
+  flink-jobmanager:
+    build: ./flink
+    container_name: idop-flink-jobmanager
+    command: jobmanager
+    ports:
+      - "${FLINK_JOBMANAGER_PORT:-8081}:8081"    # Web UI
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        state.backend: rocksdb
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        execution.checkpointing.interval: ${FLINK_CHECKPOINT_INTERVAL_MS:-60000}
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+    networks:
+      - ingestion-net
+
+  flink-taskmanager:
+    build: ./flink
+    container_name: idop-flink-taskmanager
+    command: taskmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: ${FLINK_PARALLELISM:-2}
+        state.backend: rocksdb
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+    depends_on:
+      - flink-jobmanager
+    networks:
+      - ingestion-net
+
+  # ═══════════════════════════════════════════════════════════
+  # 6. Monitoring Stack
+  # ═══════════════════════════════════════════════════════════
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: idop-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - ingestion-net
+
+  grafana:
+    image: grafana/grafana:10.4.1
+    container_name: idop-grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - ingestion-net
+
+volumes:
+  redpanda-data:
+  clickhouse-data:
+  flink-checkpoints:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  ingestion-net:
+    driver: bridge

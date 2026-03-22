@@ -1,0 +1,136 @@
+# ─────────────────────────────────────────────────────────────
+# Vector Aggregator Configuration
+# Stateless Ingestion Tier - IDOP
+#
+# Pipeline: Sources → Transforms (Validate → Feature Extract
+#           → Tail Sample → Route) → Sinks (Hot/Cold/DLQ)
+# ─────────────────────────────────────────────────────────────
+
+data_dir: /var/lib/vector
+
+api:
+  enabled: true
+  address: "0.0.0.0:8686"
+
+# ─── Health Endpoint ────────────────────────────────────────
+sources:
+  # OTLP gRPC receiver (from Edge agents via Envoy)
+  otlp_grpc:
+    type: opentelemetry
+    grpc:
+      address: "0.0.0.0:4317"
+    acknowledgements:
+      enabled: true
+
+  # HTTP JSON receiver (fallback for structured JSON payloads)
+  http_json:
+    type: http_server
+    address: "0.0.0.0:8686"
+    encoding: json
+    acknowledgements:
+      enabled: true
+
+  # Internal metrics for self-monitoring
+  internal_metrics:
+    type: internal_metrics
+
+# ─── Transforms ─────────────────────────────────────────────
+transforms:
+  # 1. Context Validation (REQ-2.6: Enforce TraceID, Topology, Timestamps)
+  context_validation:
+    type: remap
+    inputs:
+      - otlp_grpc
+      - http_json
+    file: /etc/vector/vrl/context_validation.vrl
+
+  # 2. ML Feature Translation (Extract GC pauses, exceptions, connection times)
+  feature_translation:
+    type: remap
+    inputs:
+      - context_validation
+    file: /etc/vector/vrl/feature_translation.vrl
+
+  # 3. Tail-Based Sampling (Buffer & flag anomalous request paths)
+  tail_sampling:
+    type: remap
+    inputs:
+      - feature_translation
+    file: /etc/vector/vrl/tail_sampling.vrl
+
+  # 4. Intelligent Router (REQ-2.1: Route to Hot/Cold/DLQ)
+  route_telemetry:
+    type: route
+    inputs:
+      - tail_sampling
+    route:
+      # Hot Path: metrics, anomalous traces, ML-flagged events, security flags
+      hot: '.is_anomalous == true || .is_metric == true || .is_security_flag == true'
+      # DLQ: events flagged as invalid during validation
+      dlq: '.is_invalid == true'
+      # Cold Path: everything else (raw logs, normal traces) — uses _unmatched
+
+# ─── Sinks ──────────────────────────────────────────────────
+sinks:
+  # Hot Path → Redpanda telemetry-hot topic
+  redpanda_hot:
+    type: kafka
+    inputs:
+      - "route_telemetry.hot"
+    bootstrap_servers: "${REDPANDA_BROKER:-redpanda:9092}"
+    topic: "telemetry-hot"
+    key_field: ".trace_id"
+    encoding:
+      codec: json
+    compression: snappy
+    batch:
+      max_bytes: 1048576     # 1 MB (REQ-1.8)
+      timeout_secs: 0.5      # 500ms flush
+    acknowledgements:
+      enabled: true
+    buffer:
+      type: memory
+      max_events: 50000
+
+  # Cold Path → Redpanda telemetry-cold topic
+  redpanda_cold:
+    type: kafka
+    inputs:
+      - "route_telemetry._unmatched"
+    bootstrap_servers: "${REDPANDA_BROKER:-redpanda:9092}"
+    topic: "telemetry-cold"
+    key_field: ".trace_id"
+    encoding:
+      codec: json
+    compression: zstd        # Higher compression for cold storage
+    batch:
+      max_bytes: 5242880     # 5 MB (larger batches for cold)
+      timeout_secs: 5
+    acknowledgements:
+      enabled: true
+    buffer:
+      type: disk
+      max_size: 268435456    # 256 MB disk buffer
+      when_full: block
+
+  # Dead Letter Queue → Redpanda telemetry-dlq topic
+  redpanda_dlq:
+    type: kafka
+    inputs:
+      - "route_telemetry.dlq"
+    bootstrap_servers: "${REDPANDA_BROKER:-redpanda:9092}"
+    topic: "telemetry-dlq"
+    encoding:
+      codec: json
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 10
+    acknowledgements:
+      enabled: true
+
+  # Self-monitoring metrics → Prometheus
+  prometheus_exporter:
+    type: prometheus_exporter
+    inputs:
+      - internal_metrics
+    address: "0.0.0.0:9598"

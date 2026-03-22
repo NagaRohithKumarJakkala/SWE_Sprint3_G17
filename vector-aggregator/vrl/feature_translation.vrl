@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────
+# VRL: ML Feature Translation
+# Extract structured features for downstream ML pipeline
+#
+# Extracts: GC pauses, exception patterns, connection times,
+#           error rates, latency signals
+# ─────────────────────────────────────────────────────────────
+
+# Initialize feature vector
+.ml_features = {}
+.is_metric = false
+
+# ── Extract body text for pattern matching ──
+body_text = string(.body) ?? ""
+
+# ── GC Pause Detection ──
+# Match common GC log patterns (Java, Go, .NET)
+if match(body_text, r'(?i)(gc\s*pause|stop.the.world|full\s*gc|concurrent\s*mark)') {
+    gc_match = parse_regex(body_text, r'(?i)(?P<gc_duration>\d+\.?\d*)\s*(?:ms|milliseconds)') ?? {}
+    .ml_features.gc_pause_ms = to_float(gc_match.gc_duration) ?? 0.0
+    .ml_features.has_gc_event = true
+    .is_metric = true
+}
+
+# ── Exception / Error Detection ──
+if match(body_text, r'(?i)(exception|error|fatal|panic|traceback|stack\s*trace)') {
+    .ml_features.has_exception = true
+    .ml_features.error_class = "exception"
+
+    # Try to extract exception type
+    exception_match = parse_regex(body_text, r'(?P<exception_type>[A-Z][a-zA-Z]*(?:Exception|Error|Fault))') ?? {}
+    if exists(exception_match.exception_type) {
+        .ml_features.exception_type = exception_match.exception_type
+    }
+    .is_metric = true
+}
+
+# ── Connection / Latency Signals ──
+if match(body_text, r'(?i)(connection\s*(?:timeout|refused|reset)|latency|response\s*time|duration)') {
+    latency_match = parse_regex(body_text, r'(?i)(?:latency|duration|time)[=:\s]*(?P<latency_ms>\d+\.?\d*)\s*(?:ms)?') ?? {}
+    if exists(latency_match.latency_ms) {
+        .ml_features.latency_ms = to_float(latency_match.latency_ms) ?? 0.0
+    }
+
+    if match(body_text, r'(?i)connection\s*(?:timeout|refused|reset)') {
+        .ml_features.connection_failure = true
+        .is_metric = true
+    }
+}
+
+# ── HTTP Status Code Extraction ──
+if exists(.http_status) {
+    status = to_int(.http_status) ?? 0
+    .ml_features.http_status = status
+    if status >= 500 {
+        .ml_features.is_server_error = true
+        .is_metric = true
+    } else if status >= 400 {
+        .ml_features.is_client_error = true
+    }
+}
+
+# ── Severity-Based Flagging ──
+severity = upcase(string(.severity) ?? "INFO")
+if severity == "ERROR" || severity == "CRITICAL" || severity == "FATAL" {
+    .ml_features.high_severity = true
+    .is_metric = true
+}
+
+.

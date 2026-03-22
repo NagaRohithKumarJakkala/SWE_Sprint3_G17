@@ -1,0 +1,96 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Ingestion Throughput (events/sec)",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(vector_events_processed_total[1m])",
+          "legendFormat": "{{component_id}}"
+        }
+      ]
+    },
+    {
+      "title": "Redpanda Topic Lag",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "redpanda_kafka_consumer_group_committed_offset",
+          "legendFormat": "{{group}} - {{topic}}"
+        }
+      ]
+    },
+    {
+      "title": "Hot vs Cold Routing Rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(vector_events_out_total{component_id=~\"redpanda_hot|redpanda_cold\"}[1m])",
+          "legendFormat": "{{component_id}}"
+        }
+      ]
+    },
+    {
+      "title": "DLQ Events",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "increase(vector_events_out_total{component_id=\"redpanda_dlq\"}[1h])"
+        }
+      ]
+    },
+    {
+      "title": "ClickHouse Insert Rate",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(ClickHouseProfileEvents_InsertedRows[1m])"
+        }
+      ]
+    },
+    {
+      "title": "Flink Task Managers",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "flink_jobmanager_numRegisteredTaskManagers"
+        }
+      ]
+    },
+    {
+      "title": "Envoy Active Connections",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 6, "y": 16 },
+      "targets": [
+        {
+          "expr": "envoy_cluster_upstream_cx_active{cluster=\"vector_aggregator_grpc\"}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["idop", "ingestion"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "IDOP Ingestion Layer Overview",
+  "uid": "idop-ingestion-overview"
+}

@@ -1,0 +1,60 @@
+<!-- ClickHouse Users Configuration -->
+<clickhouse>
+    <users>
+        <default>
+            <password_sha256_hex/>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management>1</access_management>
+        </default>
+
+        <!-- Read-only user for Grafana dashboards (REQ: UI-2) -->
+        <grafana_reader>
+            <password>grafana_readonly_pass</password>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>readonly</profile>
+            <quota>grafana_quota</quota>
+        </grafana_reader>
+    </users>
+
+    <profiles>
+        <default>
+            <max_memory_usage>10000000000</max_memory_usage>
+            <max_execution_time>30</max_execution_time>
+        </default>
+        <readonly>
+            <readonly>1</readonly>
+            <max_memory_usage>2000000000</max_memory_usage>
+            <max_execution_time>10</max_execution_time>
+        </readonly>
+    </profiles>
+
+    <quotas>
+        <default>
+            <interval>
+                <duration>3600</duration>
+                <queries>0</queries>
+                <errors>0</errors>
+                <result_rows>0</result_rows>
+                <read_rows>0</read_rows>
+                <execution_time>0</execution_time>
+            </interval>
+        </default>
+        <!-- Grafana: max 1000 queries per hour (REQ: UI-3) -->
+        <grafana_quota>
+            <interval>
+                <duration>3600</duration>
+                <queries>1000</queries>
+                <errors>100</errors>
+                <result_rows>0</result_rows>
+                <read_rows>0</read_rows>
+                <execution_time>0</execution_time>
+            </interval>
+        </grafana_quota>
+    </quotas>
+</clickhouse>

@@ -1,0 +1,33 @@
+# Build outputs
+flink/target/
+*.class
+*.jar
+!flink/lib/*.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# Environment
+.env
+*.log
+
+# Docker
+docker-compose.override.yml
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+
+# Data volumes (created by docker-compose)
+data/
+volumes/
+
+# OS
+.DS_Store
+Thumbs.db

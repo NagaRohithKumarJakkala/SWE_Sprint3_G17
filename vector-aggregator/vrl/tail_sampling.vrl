@@ -1,0 +1,75 @@
+# ─────────────────────────────────────────────────────────────
+# VRL: Tail-Based Sampling
+# REQ-2.6 — Buffer & flag anomalous distributed traces
+#
+# Evaluates pre-parsed fields to determine if a trace/event
+# should be flagged for the hot path (anomalous) or cold path
+# ─────────────────────────────────────────────────────────────
+
+# Default: not anomalous, not a security flag
+.is_anomalous = .is_anomalous ?? false
+.is_security_flag = false
+
+# ── Rule 1: High-severity errors are always anomalous ──
+severity = upcase(string(.severity) ?? "INFO")
+if severity == "CRITICAL" || severity == "FATAL" {
+    .is_anomalous = true
+    .anomaly_reason = "critical_severity"
+}
+
+# ── Rule 2: ML feature signals trigger anomaly flag ──
+if exists(.ml_features) {
+    # GC pauses above threshold
+    gc_pause = to_float(.ml_features.gc_pause_ms) ?? 0.0
+    if gc_pause > 200.0 {
+        .is_anomalous = true
+        .anomaly_reason = "high_gc_pause"
+    }
+
+    # Connection failures
+    if .ml_features.connection_failure == true {
+        .is_anomalous = true
+        .anomaly_reason = "connection_failure"
+    }
+
+    # Server errors (5xx)
+    if .ml_features.is_server_error == true {
+        .is_anomalous = true
+        .anomaly_reason = "server_error"
+    }
+
+    # High latency (configurable threshold)
+    latency = to_float(.ml_features.latency_ms) ?? 0.0
+    if latency > 5000.0 {
+        .is_anomalous = true
+        .anomaly_reason = "high_latency"
+    }
+
+    # Exception presence
+    if .ml_features.has_exception == true {
+        .is_anomalous = true
+        .anomaly_reason = "exception_detected"
+    }
+}
+
+# ── Rule 3: Security flag patterns ──
+body_text = string(.body) ?? ""
+if match(body_text, r'(?i)(unauthorized|forbidden|authentication\s*fail|invalid\s*token|sql\s*injection|xss)') {
+    .is_security_flag = true
+    .is_anomalous = true
+    .anomaly_reason = "security_event"
+}
+
+# ── Sampling: For non-anomalous events, apply probabilistic sampling ──
+# This reduces volume on the hot path while still capturing a sample
+if !.is_anomalous && .is_metric == true {
+    # 10% sampling rate for non-anomalous metrics
+    random_val = to_float(now()) ?? 0.0
+    frac = random_val - floor(random_val)
+    if frac < 0.1 {
+        .is_anomalous = true
+        .anomaly_reason = "sampled_metric"
+    }
+}
+
+.

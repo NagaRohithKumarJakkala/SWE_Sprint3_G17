@@ -1,0 +1,37 @@
+# ─────────────────────────────────────────────────────────────
+# Prometheus Configuration for IDOP Ingestion Layer
+# ─────────────────────────────────────────────────────────────
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Vector Aggregator metrics
+  - job_name: "vector-aggregator"
+    static_configs:
+      - targets: ["vector-aggregator:9598"]
+    metrics_path: /metrics
+
+  # Redpanda metrics
+  - job_name: "redpanda"
+    static_configs:
+      - targets: ["redpanda:9644"]
+    metrics_path: /public_metrics
+
+  # ClickHouse metrics
+  - job_name: "clickhouse"
+    static_configs:
+      - targets: ["clickhouse:9363"]
+    metrics_path: /metrics
+
+  # Flink metrics (if prometheus reporter is configured)
+  - job_name: "flink"
+    static_configs:
+      - targets: ["flink-jobmanager:9249"]
+    metrics_path: /
+
+  # Envoy metrics
+  - job_name: "envoy"
+    static_configs:
+      - targets: ["envoy:9901"]
+    metrics_path: /stats/prometheus
