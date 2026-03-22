@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Generate sample telemetry data for the IDOP Ingestion Layer.
 
