@@ -31,3 +31,7 @@ volumes/
 # OS
 .DS_Store
 Thumbs.db
+
+# Guide files
+SRS.tex
+ingestion_layer_architecture.txt

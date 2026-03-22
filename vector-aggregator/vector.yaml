@@ -19,13 +19,15 @@ sources:
     type: opentelemetry
     grpc:
       address: "0.0.0.0:4317"
+    http:
+      address: "0.0.0.0:4318"
     acknowledgements:
       enabled: true
 
   # HTTP JSON receiver (fallback for structured JSON payloads)
   http_json:
     type: http_server
-    address: "0.0.0.0:8686"
+    address: "0.0.0.0:8687"
     encoding: json
     acknowledgements:
       enabled: true
@@ -40,7 +42,7 @@ transforms:
   context_validation:
     type: remap
     inputs:
-      - otlp_grpc
+      - "otlp_grpc.logs"
       - http_json
     file: /etc/vector/vrl/context_validation.vrl
 
@@ -110,7 +112,7 @@ sinks:
       enabled: true
     buffer:
       type: disk
-      max_size: 268435456    # 256 MB disk buffer
+      max_size: 268435488    # ~256 MB disk buffer (minimum required)
       when_full: block
 
   # Dead Letter Queue → Redpanda telemetry-dlq topic

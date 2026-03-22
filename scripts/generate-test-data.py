@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timezone
 
 # ── Configuration ──
-VECTOR_HTTP_URL = "http://localhost:8686"
+VECTOR_HTTP_URL = "http://localhost:8687"
 REDPANDA_BROKER = "localhost:19092"
 
 SERVICES = [

@@ -7,7 +7,9 @@
 # ─────────────────────────────────────────────────────────────
 
 # Default: not anomalous, not a security flag
-.is_anomalous = .is_anomalous ?? false
+if !exists(.is_anomalous) {
+    .is_anomalous = false
+}
 .is_security_flag = false
 
 # ── Rule 1: High-severity errors are always anomalous ──
@@ -62,9 +64,9 @@ if match(body_text, r'(?i)(unauthorized|forbidden|authentication\s*fail|invalid\
 
 # ── Sampling: For non-anomalous events, apply probabilistic sampling ──
 # This reduces volume on the hot path while still capturing a sample
-if !.is_anomalous && .is_metric == true {
+if !(to_bool(.is_anomalous) ?? false) && (to_bool(.is_metric) ?? false) {
     # 10% sampling rate for non-anomalous metrics
-    random_val = to_float(now()) ?? 0.0
+    random_val = to_float(now())
     frac = random_val - floor(random_val)
     if frac < 0.1 {
         .is_anomalous = true
