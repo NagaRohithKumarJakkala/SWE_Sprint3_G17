@@ -47,6 +47,9 @@ public class TelemetryEvent implements Serializable {
     @JsonProperty("is_security_flag")
     private boolean isSecurityFlag;
 
+    @JsonProperty("resource_flat")
+    private Map<String, Object> resourceFlat;
+
     // Constructors
     public TelemetryEvent() {}
 
@@ -60,7 +63,10 @@ public class TelemetryEvent implements Serializable {
     public String getSpanId() { return spanId; }
     public void setSpanId(String spanId) { this.spanId = spanId; }
 
-    public String getServiceName() { return serviceName; }
+    public String getServiceName() {
+        if (serviceName != null) return serviceName;
+        return "unknown";
+    }
     public void setServiceName(String serviceName) { this.serviceName = serviceName; }
 
     public String getSeverity() { return severity; }
@@ -83,4 +89,38 @@ public class TelemetryEvent implements Serializable {
 
     public boolean isSecurityFlag() { return isSecurityFlag; }
     public void setSecurityFlag(boolean securityFlag) { isSecurityFlag = securityFlag; }
+
+    public Map<String, Object> getResourceFlat() { return resourceFlat; }
+    public void setResourceFlat(Map<String, Object> resourceFlat) { this.resourceFlat = resourceFlat; }
+
+    // ── ML Feature Accessors (convenience) ──
+
+    /** Safely extract a double from the ml_features map. */
+    public double getMlFeatureDouble(String key) {
+        if (mlFeatures == null) return 0.0;
+        Object val = mlFeatures.get(key);
+        if (val instanceof Number) return ((Number) val).doubleValue();
+        return 0.0;
+    }
+
+    /** Safely extract a boolean from the ml_features map. */
+    public boolean getMlFeatureBool(String key) {
+        if (mlFeatures == null) return false;
+        return Boolean.TRUE.equals(mlFeatures.get(key));
+    }
+
+    /** Safely extract a string from the ml_features map. */
+    public String getMlFeatureString(String key) {
+        if (mlFeatures == null) return "";
+        Object val = mlFeatures.get(key);
+        return val != null ? val.toString() : "";
+    }
+
+    /** Safely extract an int from the ml_features map. */
+    public int getMlFeatureInt(String key) {
+        if (mlFeatures == null) return 0;
+        Object val = mlFeatures.get(key);
+        if (val instanceof Number) return ((Number) val).intValue();
+        return 0;
+    }
 }

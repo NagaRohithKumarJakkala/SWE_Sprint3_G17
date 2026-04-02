@@ -1,4 +1,4 @@
-.PHONY: help up down restart logs build test health topics flink-deploy clean
+.PHONY: help up down restart logs build test health topics flink-build flink-deploy clean status validate
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -7,17 +7,23 @@ help: ## Show this help
 build: ## Build all Docker images
 	docker compose build
 
-up: ## Start the full ingestion pipeline
-	docker compose up -d
+up: build ## Start the full ingestion pipeline (builds first)
+	docker compose up -d --wait
 
 down: ## Stop the full ingestion pipeline
 	docker compose down
 
 restart: ## Restart all services
-	docker compose down && docker compose up -d
+	docker compose down && docker compose up -d --wait
 
 logs: ## Tail logs from all services
 	docker compose logs -f
+
+status: ## Show service health status
+	docker compose ps
+
+validate: ## Validate docker-compose.yml syntax
+	docker compose config --quiet
 
 topics: ## Create Redpanda topics
 	docker compose exec redpanda bash /etc/redpanda/scripts/create-topics.sh

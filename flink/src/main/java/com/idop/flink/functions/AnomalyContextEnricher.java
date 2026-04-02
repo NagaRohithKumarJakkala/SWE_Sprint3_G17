@@ -62,12 +62,12 @@ public class AnomalyContextEnricher
                                Collector<MLFeaturePayload> out) throws Exception {
 
         // Only enrich if there are anomalies and connection is available
-        if (payload.getAnomalyCount() > 0 && connection != null && !connection.isClosed()) {
+        if (payload.getMetadata().getAnomalyCount() > 0 && connection != null && !connection.isClosed()) {
             try {
                 List<Map<String, Object>> context = fetchContext(
                         payload.getServiceName(),
-                        payload.getWindowStart(),
-                        payload.getWindowEnd()
+                        payload.getWindowStartEpochMs(),
+                        payload.getWindowEndEpochMs()
                 );
                 payload.setHistoricalContext(context);
             } catch (Exception e) {

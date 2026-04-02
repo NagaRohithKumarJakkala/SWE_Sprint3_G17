@@ -1,20 +1,120 @@
 # ─────────────────────────────────────────────────────────────
-# VRL: ML Feature Translation
+# VRL: ML Feature Translation (v2 — Full Feature Engineering)
 # Extract structured features for downstream ML pipeline
 #
+# Per-event atomic extractions (stateless). All cross-event
+# mathematics (percentiles, entropy, derivatives) happen in Flink.
+#
 # Extracts: GC pauses, exception patterns, connection times,
-#           error rates, latency signals
+#           latency signals, severity numerics, log body category,
+#           stack trace detection, retry attempts, span duration,
+#           resource attributes, HTTP status class, payload size
 # ─────────────────────────────────────────────────────────────
 
-# Initialize feature vector
+# Initialize feature vector with safe defaults
 .ml_features = {}
+.ml_features.gc_pause_ms = 0.0
+.ml_features.has_gc_event = false
+.ml_features.has_exception = false
+.ml_features.exception_type = ""
+.ml_features.latency_ms = 0.0
+.ml_features.connection_failure = false
+.ml_features.connection_wait_ms = 0.0
+.ml_features.http_status = 0
+.ml_features.http_status_class = ""
+.ml_features.is_server_error = false
+.ml_features.is_client_error = false
+.ml_features.high_severity = false
+.ml_features.has_stack_trace = false
+.ml_features.log_body_length_bytes = 0
+.ml_features.log_body_category = "normal_operation"
+.ml_features.severity_num = 2
+.ml_features.retry_attempt = 0
+.ml_features.span_duration_ms = 0.0
 .is_metric = false
 
 # ── Extract body text for pattern matching ──
 body_text = string(.body) ?? ""
 
-# ── GC Pause Detection ──
-# Match common GC log patterns (Java, Go, .NET)
+# ───────────────────────────────────────────────────────────
+# 1. SEVERITY NUMERIC ENCODING
+#    0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL
+# ───────────────────────────────────────────────────────────
+severity = upcase(string(.severity) ?? "INFO")
+if severity == "TRACE" {
+    .ml_features.severity_num = 0
+} else if severity == "DEBUG" {
+    .ml_features.severity_num = 1
+} else if severity == "INFO" {
+    .ml_features.severity_num = 2
+} else if severity == "WARN" || severity == "WARNING" {
+    .ml_features.severity_num = 3
+} else if severity == "ERROR" {
+    .ml_features.severity_num = 4
+} else if severity == "CRITICAL" || severity == "FATAL" {
+    .ml_features.severity_num = 5
+}
+
+# ── Severity-Based Flagging ──
+if severity == "ERROR" || severity == "CRITICAL" || severity == "FATAL" {
+    .ml_features.high_severity = true
+    .is_metric = true
+}
+
+# ───────────────────────────────────────────────────────────
+# 2. LOG BODY LENGTH (cheap stack-trace proxy, no regex)
+# ───────────────────────────────────────────────────────────
+.ml_features.log_body_length_bytes = length(body_text)
+
+# ───────────────────────────────────────────────────────────
+# 3. STACK TRACE DETECTION
+# ───────────────────────────────────────────────────────────
+if match(body_text, r'at\s+[\w.$]+\([\w]+\.java:\d+\)') || match(body_text, r'Traceback \(most recent call') || match(body_text, r'goroutine \d+') {
+    .ml_features.has_stack_trace = true
+}
+
+# ───────────────────────────────────────────────────────────
+# 4. LOG BODY CATEGORY (Priority Waterfall — first match wins)
+#    Closed taxonomy of 15 categories
+# ───────────────────────────────────────────────────────────
+if match(body_text, r'(?i)out\s*of\s*memory|OOM|heap\s*space') {
+    .ml_features.log_body_category = "oom_error"
+} else if match(body_text, r'(?i)gc\s*pause|full\s*gc|stop.the.world|concurrent\s*mark') {
+    .ml_features.log_body_category = "gc_event"
+} else if match(body_text, r'(?i)connection\s*timed?\s*out') {
+    .ml_features.log_body_category = "connection_timeout"
+} else if match(body_text, r'(?i)connection\s*refused') {
+    .ml_features.log_body_category = "connection_refused"
+} else if match(body_text, r'(?i)pool\s*(wait|exhaust)|waited\s*\d+.*for\s*connection') {
+    .ml_features.log_body_category = "connection_pool_wait"
+} else if match(body_text, r'(?i)sql\s*exception|deadlock|query\s*timeout') {
+    .ml_features.log_body_category = "db_query_error"
+} else if match(body_text, r'(?i)unauthorized|authentication\s*fail|invalid\s*token') {
+    .ml_features.log_body_category = "auth_failure"
+} else if match(body_text, r'(?i)forbidden|access\s*denied|permission') {
+    .ml_features.log_body_category = "permission_denied"
+} else if match(body_text, r'(?i)thread\s*pool\s*(exhaust|reject)|RejectedExecution') {
+    .ml_features.log_body_category = "thread_pool_exhaustion"
+} else if match(body_text, r'(?i)circuit\s*breaker\s*(open|trip)') {
+    .ml_features.log_body_category = "circuit_breaker_open"
+} else if match(body_text, r'(?i)retr(y|ies)\s*(exhaust|exceed|fail)') {
+    .ml_features.log_body_category = "retry_exhausted"
+} else if match(body_text, r'(?i)(5\d{2})\s*(internal server|bad gateway|service unavailable|gateway timeout)') {
+    .ml_features.log_body_category = "http_server_error"
+} else if match(body_text, r'(?i)(4\d{2})\s*(bad request|not found|method not allowed)') {
+    .ml_features.log_body_category = "http_client_error"
+} else if .ml_features.has_stack_trace == true {
+    .ml_features.log_body_category = "stack_trace"
+} else if match(body_text, r'(?i)(start(ed|ing)|stop(ped|ping)|shutdown|initializ)') {
+    .ml_features.log_body_category = "startup_shutdown"
+} else if match(body_text, r'(?i)health|readiness|liveness|ping') {
+    .ml_features.log_body_category = "health_check"
+}
+# else: keeps default "normal_operation"
+
+# ───────────────────────────────────────────────────────────
+# 5. GC PAUSE DETECTION
+# ───────────────────────────────────────────────────────────
 if match(body_text, r'(?i)(gc\s*pause|stop.the.world|full\s*gc|concurrent\s*mark)') {
     gc_match = parse_regex(body_text, r'(?i)(?P<gc_duration>\d+\.?\d*)\s*(?:ms|milliseconds)') ?? {}
     .ml_features.gc_pause_ms = to_float(gc_match.gc_duration) ?? 0.0
@@ -22,12 +122,13 @@ if match(body_text, r'(?i)(gc\s*pause|stop.the.world|full\s*gc|concurrent\s*mark
     .is_metric = true
 }
 
-# ── Exception / Error Detection ──
+# ───────────────────────────────────────────────────────────
+# 6. EXCEPTION / ERROR DETECTION
+# ───────────────────────────────────────────────────────────
 if match(body_text, r'(?i)(exception|error|fatal|panic|traceback|stack\s*trace)') {
     .ml_features.has_exception = true
-    .ml_features.error_class = "exception"
 
-    # Try to extract exception type
+    # Extract exception class name
     exception_match = parse_regex(body_text, r'(?P<exception_type>[A-Z][a-zA-Z]*(?:Exception|Error|Fault))') ?? {}
     if exists(exception_match.exception_type) {
         .ml_features.exception_type = exception_match.exception_type
@@ -35,7 +136,9 @@ if match(body_text, r'(?i)(exception|error|fatal|panic|traceback|stack\s*trace)'
     .is_metric = true
 }
 
-# ── Connection / Latency Signals ──
+# ───────────────────────────────────────────────────────────
+# 7. CONNECTION / LATENCY SIGNALS
+# ───────────────────────────────────────────────────────────
 if match(body_text, r'(?i)(connection\s*(?:timeout|refused|reset)|latency|response\s*time|duration)') {
     latency_match = parse_regex(body_text, r'(?i)(?:latency|duration|time)[=:\s]*(?P<latency_ms>\d+\.?\d*)\s*(?:ms)?') ?? {}
     if exists(latency_match.latency_ms) {
@@ -48,23 +151,131 @@ if match(body_text, r'(?i)(connection\s*(?:timeout|refused|reset)|latency|respon
     }
 }
 
-# ── HTTP Status Code Extraction ──
+# ── Connection Pool Wait Time ──
+pool_wait_match = parse_regex(body_text, r'(?i)[Ww]aited?\s*(?P<wait_ms>\d+\.?\d*)\s*(?:ms|milliseconds)?\s*(?:for\s*connection|from\s*pool)') ?? {}
+if exists(pool_wait_match.wait_ms) {
+    .ml_features.connection_wait_ms = to_float(pool_wait_match.wait_ms) ?? 0.0
+    .is_metric = true
+}
+
+# ───────────────────────────────────────────────────────────
+# 8. RETRY ATTEMPT EXTRACTION
+# ───────────────────────────────────────────────────────────
+# From span attributes (OTel resilience instrumentation)
+if exists(.attributes.retry.count) {
+    .ml_features.retry_attempt = to_int(.attributes.retry.count) ?? 0
+} else if exists(.attributes."retry.attempt") {
+    .ml_features.retry_attempt = to_int(.attributes."retry.attempt") ?? 0
+}
+# From log body fallback
+retry_match = parse_regex(body_text, r'(?i)(?:retry|attempt)\s*[#:=]?\s*(?P<attempt>\d+)') ?? {}
+if exists(retry_match.attempt) {
+    attempt_val = to_int(retry_match.attempt) ?? 0
+    if attempt_val > .ml_features.retry_attempt {
+        .ml_features.retry_attempt = attempt_val
+    }
+}
+if .ml_features.retry_attempt > 0 {
+    .is_metric = true
+}
+
+# ───────────────────────────────────────────────────────────
+# 9. HTTP STATUS CODE & CLASS
+# ───────────────────────────────────────────────────────────
 if exists(.http_status) {
     status = to_int(.http_status) ?? 0
     .ml_features.http_status = status
     if status >= 500 {
+        .ml_features.http_status_class = "5xx"
         .ml_features.is_server_error = true
         .is_metric = true
     } else if status >= 400 {
+        .ml_features.http_status_class = "4xx"
         .ml_features.is_client_error = true
+    } else if status >= 300 {
+        .ml_features.http_status_class = "3xx"
+    } else if status >= 200 {
+        .ml_features.http_status_class = "2xx"
+    }
+} else if exists(.attributes."http.status_code") {
+    status = to_int(.attributes."http.status_code") ?? 0
+    .ml_features.http_status = status
+    if status >= 500 {
+        .ml_features.http_status_class = "5xx"
+        .ml_features.is_server_error = true
+        .is_metric = true
+    } else if status >= 400 {
+        .ml_features.http_status_class = "4xx"
+        .ml_features.is_client_error = true
+    } else if status >= 300 {
+        .ml_features.http_status_class = "3xx"
+    } else if status >= 200 {
+        .ml_features.http_status_class = "2xx"
     }
 }
 
-# ── Severity-Based Flagging ──
-severity = upcase(string(.severity) ?? "INFO")
-if severity == "ERROR" || severity == "CRITICAL" || severity == "FATAL" {
-    .ml_features.high_severity = true
-    .is_metric = true
+# ───────────────────────────────────────────────────────────
+# 10. SPAN DURATION (from OTel span attributes)
+# ───────────────────────────────────────────────────────────
+if exists(.attributes."span.duration_ms") {
+    .ml_features.span_duration_ms = to_float(.attributes."span.duration_ms") ?? 0.0
+} else if exists(.duration_ms) {
+    .ml_features.span_duration_ms = to_float(.duration_ms) ?? 0.0
+} else if exists(.end_timestamp) && exists(.timestamp) {
+    # Compute from start/end if available (nanosecond OTel timestamps)
+    end_ns = to_int(.end_timestamp) ?? 0
+    start_ns = to_int(.timestamp) ?? 0
+    if end_ns > start_ns && end_ns > 1000000000000000 {
+        .ml_features.span_duration_ms = to_float(end_ns - start_ns) / 1000000.0
+    }
+}
+
+# ───────────────────────────────────────────────────────────
+# 11. RESOURCE ATTRIBUTE FLATTENING
+#     Flatten OTel resource attributes to top-level for Flink
+# ───────────────────────────────────────────────────────────
+.resource_flat = {}
+
+# Host name
+if exists(.resources."host.name") {
+    .resource_flat.host_name = string(.resources."host.name") ?? ""
+} else if exists(.resource."host.name") {
+    .resource_flat.host_name = string(.resource."host.name") ?? ""
+}
+
+# CPU utilization
+if exists(.resources."host.cpu.utilization") {
+    .resource_flat.cpu_utilization = to_float(.resources."host.cpu.utilization") ?? 0.0
+} else if exists(.resource."host.cpu.utilization") {
+    .resource_flat.cpu_utilization = to_float(.resource."host.cpu.utilization") ?? 0.0
+} else {
+    .resource_flat.cpu_utilization = 0.0
+}
+
+# JVM Heap
+if exists(.resources."process.runtime.jvm.memory.heap.used") {
+    .resource_flat.memory_heap_used_bytes = to_int(.resources."process.runtime.jvm.memory.heap.used") ?? 0
+} else if exists(.resource."process.runtime.jvm.memory.heap.used") {
+    .resource_flat.memory_heap_used_bytes = to_int(.resource."process.runtime.jvm.memory.heap.used") ?? 0
+} else {
+    .resource_flat.memory_heap_used_bytes = 0
+}
+
+if exists(.resources."process.runtime.jvm.memory.heap.max") {
+    .resource_flat.memory_heap_max_bytes = to_int(.resources."process.runtime.jvm.memory.heap.max") ?? 0
+} else if exists(.resource."process.runtime.jvm.memory.heap.max") {
+    .resource_flat.memory_heap_max_bytes = to_int(.resource."process.runtime.jvm.memory.heap.max") ?? 0
+} else {
+    .resource_flat.memory_heap_max_bytes = 0
+}
+
+# ── Normalize service_name for downstream keying ──
+if !exists(.service_name) {
+    if exists(.service.name) {
+        .service_name = string(.service.name) ?? "unknown"
+    } else {
+        .service_name = "unknown"
+    }
 }
 
 .
